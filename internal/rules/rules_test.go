@@ -89,6 +89,7 @@ func TestBuiltinsRejectNonSecrets(t *testing.T) {
 		"https://example.com/services/T00000000/B00000000/token",
 		"eyJheader.payload",
 		"abc.def.ghi",
+		"eyJabc.def.ghi.jkl",
 	}
 
 	for _, line := range tests {

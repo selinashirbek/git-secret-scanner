@@ -56,7 +56,7 @@ var builtins = []detector{
 		id:       "jwt",
 		severity: Medium,
 		pattern:  regexp.MustCompile(`eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`),
-		valid:    boundedByTokenCharacters,
+		valid:    boundedByJWTCharacters,
 	},
 }
 
@@ -93,10 +93,19 @@ func boundedByTokenCharacters(line string, start, end int) bool {
 		(end == len(line) || !isTokenCharacter(line[end]))
 }
 
+func boundedByJWTCharacters(line string, start, end int) bool {
+	return (start == 0 || !isJWTCharacter(line[start-1])) &&
+		(end == len(line) || !isJWTCharacter(line[end]))
+}
+
 func isAlphaNumeric(char byte) bool {
 	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9'
 }
 
 func isTokenCharacter(char byte) bool {
 	return isAlphaNumeric(char) || char == '_'
+}
+
+func isJWTCharacter(char byte) bool {
+	return isTokenCharacter(char) || char == '-' || char == '.'
 }
