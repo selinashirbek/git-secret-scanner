@@ -1,16 +1,16 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
 
 	"github.com/selinashirbek/git-secret-scanner/internal/cli"
+	"github.com/selinashirbek/git-secret-scanner/internal/scan"
 )
 
 func main() {
 	code := cli.Run(os.Args[1:], os.Stdout, os.Stderr, func() int {
-		fmt.Fprintln(os.Stderr, "staged scanning is not available")
-		return 2
+		return scan.Staged(context.Background(), ".", os.Stdout, os.Stderr)
 	})
 	os.Exit(code)
 }
