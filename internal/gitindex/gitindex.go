@@ -52,7 +52,8 @@ func AddedLines(ctx context.Context, startDir string) ([]Line, error) {
 	if err != nil {
 		return nil, &Error{Kind: Git, Err: errors.New("could not resolve repository root")}
 	}
-	root := strings.TrimSpace(string(rootOutput))
+	root := strings.TrimSuffix(string(rootOutput), "\n")
+	root = strings.TrimSuffix(root, "\r")
 	if root == "" {
 		return nil, &Error{Kind: Parse, Err: errors.New("Git returned an empty repository root")}
 	}
@@ -94,7 +95,11 @@ func AddedLines(ctx context.Context, startDir string) ([]Line, error) {
 			return nil, &Error{Kind: Unsupported, Path: path, Err: errors.New("staged blob contains NUL")}
 		}
 
-		diffArgs := []string{"diff", "--cached", "--text", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=0", "--"}
+		diffArgs := []string{"diff", "--cached", "--text", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=0"}
+		if target.diffFilter != "" {
+			diffArgs = append(diffArgs, "--diff-filter="+target.diffFilter)
+		}
+		diffArgs = append(diffArgs, "--")
 		diffArgs = append(diffArgs, target.diffPaths...)
 		patch, err := runGit(ctx, root, diffArgs...)
 		if err != nil {
@@ -110,8 +115,9 @@ func AddedLines(ctx context.Context, startDir string) ([]Line, error) {
 }
 
 type stagedTarget struct {
-	path      string
-	diffPaths []string
+	path       string
+	diffPaths  []string
+	diffFilter string
 }
 
 func parseNameStatus(output []byte) ([]stagedTarget, error) {
@@ -134,7 +140,11 @@ func parseNameStatus(output []byte) ([]stagedTarget, error) {
 			source := string(fields[index])
 			index++
 			target := string(fields[index])
-			targets = append(targets, stagedTarget{path: target, diffPaths: []string{source, target}})
+			targets = append(targets, stagedTarget{
+				path:       target,
+				diffPaths:  []string{source, target},
+				diffFilter: string(kind),
+			})
 			index++
 			continue
 		}

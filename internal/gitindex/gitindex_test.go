@@ -69,6 +69,50 @@ func TestAddedLinesSupportsRenamedTargets(t *testing.T) {
 	assertLines(t, lines, []Line{{Path: "renamed.txt", Number: 21, Content: "new staged line"}})
 }
 
+func TestAddedLinesSupportsCopiedTargetWhenSourceIsAlsoModified(t *testing.T) {
+	repo := newRepository(t)
+	original := strings.Repeat("unchanged material 1234567890\n", 8)
+	writeFile(t, repo, "source.txt", original)
+	git(t, repo, "add", "source.txt")
+	git(t, repo, "commit", "-m", "base")
+	git(t, repo, "config", "diff.renames", "copies")
+
+	writeFile(t, repo, "source.txt", "modified source line\n"+original)
+	writeFile(t, repo, "copy.txt", original+"copied secret line 123456789012\n")
+	git(t, repo, "add", "source.txt", "copy.txt")
+	status := git(t, repo, "diff", "--cached", "--name-status", "--find-copies")
+	if !strings.Contains(status, "C088\tsource.txt\tcopy.txt") {
+		t.Fatalf("test setup produced %q, want C088 copy record", status)
+	}
+
+	lines, err := AddedLines(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("AddedLines() error = %v", err)
+	}
+	if !containsLine(lines, Line{Path: "copy.txt", Number: 9, Content: "copied secret line 123456789012"}) {
+		t.Fatalf("AddedLines() = %#v, want copied target secret line", lines)
+	}
+}
+
+func TestAddedLinesPreservesRepositoryRootEndingInSpace(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo ")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init", "-q")
+	git(t, repo, "config", "user.name", "Test User")
+	git(t, repo, "config", "user.email", "test@example.com")
+	writeFile(t, repo, "space.txt", "staged line\n")
+	git(t, repo, "add", "space.txt")
+
+	lines, err := AddedLines(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("AddedLines() error = %v", err)
+	}
+	assertLines(t, lines, []Line{{Path: "space.txt", Number: 1, Content: "staged line"}})
+}
+
 func TestAddedLinesForcesTextWhenAttributesDisableDiff(t *testing.T) {
 	repo := newRepository(t)
 	writeFile(t, repo, ".gitattributes", "*.txt -diff\n")
