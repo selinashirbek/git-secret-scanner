@@ -53,3 +53,30 @@ func TestWriteFindingOmitsRawValueAndSourceSnippet(t *testing.T) {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
+
+func TestWriteEscapesControlsAndRedactsSecretsInPath(t *testing.T) {
+	const pathSecret = "AKIAIOSFODNN7EXAMPLE"
+	var output bytes.Buffer
+
+	err := Write(&output, []Finding{{
+		Path:     "unsafe\n\t\x1b" + pathSecret + ".txt",
+		Line:     3,
+		RuleID:   "github-token",
+		Severity: rules.High,
+		Value:    "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+	}})
+
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	got := strings.TrimSuffix(output.String(), "\n")
+	if strings.ContainsAny(got, "\n\t\x1b") {
+		t.Fatalf("output contains a raw control byte: %q", got)
+	}
+	if strings.Contains(got, pathSecret) {
+		t.Fatalf("output leaked a secret from the path: %q", got)
+	}
+	if !strings.Contains(got, `\n\t\x1b`) {
+		t.Fatalf("output does not contain readable path escapes: %q", got)
+	}
+}
