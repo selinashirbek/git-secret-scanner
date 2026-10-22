@@ -55,6 +55,13 @@ func TestBuiltinsFindExactSecretSpans(t *testing.T) {
 			wantRisk: Medium,
 			want:     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature_1",
 		},
+		{
+			name:     "JWT followed by punctuation",
+			line:     "Token: eyJabc.def.ghi.",
+			wantID:   "jwt",
+			wantRisk: Medium,
+			want:     "eyJabc.def.ghi",
+		},
 	}
 
 	for _, tt := range tests {

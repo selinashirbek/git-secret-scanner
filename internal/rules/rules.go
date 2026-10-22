@@ -94,8 +94,17 @@ func boundedByTokenCharacters(line string, start, end int) bool {
 }
 
 func boundedByJWTCharacters(line string, start, end int) bool {
-	return (start == 0 || !isJWTCharacter(line[start-1])) &&
-		(end == len(line) || !isJWTCharacter(line[end]))
+	if start > 0 && isJWTCharacter(line[start-1]) {
+		return false
+	}
+	if end == len(line) {
+		return true
+	}
+	if isTokenCharacter(line[end]) || line[end] == '-' {
+		return false
+	}
+	return line[end] != '.' || end+1 == len(line) ||
+		(!isTokenCharacter(line[end+1]) && line[end+1] != '-')
 }
 
 func isAlphaNumeric(char byte) bool {
