@@ -8,11 +8,17 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 )
 
-const maxBlobSize = 2 * 1024 * 1024
+const (
+	maxBlobSize          = 2 * 1024 * 1024
+	maxPatchSize         = 4 * 1024 * 1024
+	maxAggregateBlobSize = 8 * 1024 * 1024
+	maxAggregateLines    = 50_000
+)
 
 // ErrorKind classifies failures that must stop a staged scan.
 type ErrorKind string
@@ -52,10 +58,17 @@ func AddedLines(ctx context.Context, startDir string) ([]Line, error) {
 	if err != nil {
 		return nil, &Error{Kind: Git, Err: errors.New("could not resolve repository root")}
 	}
-	root := strings.TrimSuffix(string(rootOutput), "\n")
-	root = strings.TrimSuffix(root, "\r")
-	if root == "" {
-		return nil, &Error{Kind: Parse, Err: errors.New("Git returned an empty repository root")}
+	root, err := parseRepositoryRoot(rootOutput)
+	if err != nil {
+		return nil, err
+	}
+
+	unmerged, _, err := runGitLimited(ctx, root, 1, "ls-files", "--unmerged", "-z")
+	if err != nil {
+		return nil, &Error{Kind: Git, Err: errors.New("could not inspect index for unmerged entries")}
+	}
+	if len(unmerged) != 0 {
+		return nil, &Error{Kind: Unsupported, Err: errors.New("index contains unmerged entries")}
 	}
 
 	nameStatus, err := runGit(ctx, root, "diff", "--cached", "--name-status", "-z", "--diff-filter=ACMRT")
@@ -68,6 +81,7 @@ func AddedLines(ctx context.Context, startDir string) ([]Line, error) {
 	}
 
 	var lines []Line
+	totalBlobSize := 0
 	for _, target := range targets {
 		path := target.path
 		mode, oid, err := stageEntry(ctx, root, path)
@@ -91,6 +105,10 @@ func AddedLines(ctx context.Context, startDir string) ([]Line, error) {
 		if tooLarge {
 			return nil, &Error{Kind: Unsupported, Path: path, Err: errors.New("staged blob exceeds 2 MB")}
 		}
+		if len(blob) > maxAggregateBlobSize-totalBlobSize {
+			return nil, &Error{Kind: Unsupported, Err: errors.New("staged blobs exceed 8 MB aggregate scan budget")}
+		}
+		totalBlobSize += len(blob)
 		if bytes.IndexByte(blob, 0) >= 0 {
 			return nil, &Error{Kind: Unsupported, Path: path, Err: errors.New("staged blob contains NUL")}
 		}
@@ -101,17 +119,34 @@ func AddedLines(ctx context.Context, startDir string) ([]Line, error) {
 		}
 		diffArgs = append(diffArgs, "--")
 		diffArgs = append(diffArgs, target.diffPaths...)
-		patch, err := runGit(ctx, root, diffArgs...)
+		patch, tooLarge, err := runGitLimited(ctx, root, maxPatchSize, diffArgs...)
 		if err != nil {
 			return nil, &Error{Kind: Git, Path: path, Err: errors.New("could not read staged diff")}
 		}
-		pathLines, err := parsePatch(path, patch)
+		if tooLarge {
+			return nil, &Error{Kind: Unsupported, Path: path, Err: errors.New("staged patch exceeds 4 MB")}
+		}
+		pathLines, err := parsePatchLimited(path, patch, maxAggregateLines-len(lines))
 		if err != nil {
 			return nil, err
 		}
 		lines = append(lines, pathLines...)
 	}
 	return lines, nil
+}
+
+func parseRepositoryRoot(output []byte) (string, error) {
+	if len(output) == 0 || output[len(output)-1] != '\n' {
+		return "", &Error{Kind: Parse, Err: errors.New("Git returned a malformed repository root")}
+	}
+	output = output[:len(output)-1]
+	if runtime.GOOS == "windows" && len(output) > 0 && output[len(output)-1] == '\r' {
+		output = output[:len(output)-1]
+	}
+	if len(output) == 0 {
+		return "", &Error{Kind: Parse, Err: errors.New("Git returned an empty repository root")}
+	}
+	return string(output), nil
 }
 
 type stagedTarget struct {
@@ -185,6 +220,10 @@ func stageEntry(ctx context.Context, root, path string) (string, string, error) 
 var hunkHeader = regexp.MustCompile(`^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,([0-9]+))? @@(?: .*)?$`)
 
 func parsePatch(path string, patch []byte) ([]Line, error) {
+	return parsePatchLimited(path, patch, -1)
+}
+
+func parsePatchLimited(path string, patch []byte, lineLimit int) ([]Line, error) {
 	var lines []Line
 	inHunk := false
 	newLine := 0
@@ -231,6 +270,9 @@ func parsePatch(path string, patch []byte) ([]Line, error) {
 		}
 		switch text[0] {
 		case '+':
+			if lineLimit >= 0 && len(lines) >= lineLimit {
+				return nil, &Error{Kind: Unsupported, Err: errors.New("added lines exceed aggregate scan budget")}
+			}
 			lines = append(lines, Line{Path: path, Number: newLine, Content: text[1:]})
 			newLine++
 			seenNewLines++

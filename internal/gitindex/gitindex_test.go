@@ -113,6 +113,28 @@ func TestAddedLinesPreservesRepositoryRootEndingInSpace(t *testing.T) {
 	assertLines(t, lines, []Line{{Path: "space.txt", Number: 1, Content: "staged line"}})
 }
 
+func TestAddedLinesPreservesRepositoryRootEndingInCarriageReturnOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file names cannot end in a carriage return")
+	}
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo\r")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init", "-q")
+	git(t, repo, "config", "user.name", "Test User")
+	git(t, repo, "config", "user.email", "test@example.com")
+	writeFile(t, repo, "carriage-return.txt", "staged line\n")
+	git(t, repo, "add", "carriage-return.txt")
+
+	lines, err := AddedLines(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("AddedLines() error = %v", err)
+	}
+	assertLines(t, lines, []Line{{Path: "carriage-return.txt", Number: 1, Content: "staged line"}})
+}
+
 func TestAddedLinesForcesTextWhenAttributesDisableDiff(t *testing.T) {
 	repo := newRepository(t)
 	writeFile(t, repo, ".gitattributes", "*.txt -diff\n")
@@ -183,6 +205,67 @@ func TestAddedLinesRejectsUnsupportedStagedBlobs(t *testing.T) {
 				t.Fatalf("error kind = %q, want %q", indexErr.Kind, Unsupported)
 			}
 		})
+	}
+}
+
+func TestAddedLinesRejectsPatchLargerThanFourMegabytes(t *testing.T) {
+	repo := newRepository(t)
+	writeFile(t, repo, "replaced.txt", strings.Repeat("old deleted content\n", 240_000))
+	git(t, repo, "add", "replaced.txt")
+	git(t, repo, "commit", "-m", "large base")
+
+	writeFile(t, repo, "replaced.txt", "small staged replacement\n")
+	git(t, repo, "add", "replaced.txt")
+
+	_, err := AddedLines(context.Background(), repo)
+	var indexErr *Error
+	if !errors.As(err, &indexErr) {
+		t.Fatalf("AddedLines() error = %T %v, want *Error", err, err)
+	}
+	if indexErr.Kind != Unsupported {
+		t.Fatalf("error kind = %q, want %q", indexErr.Kind, Unsupported)
+	}
+}
+
+func TestAddedLinesRejectsAggregateBlobBudgetOverEightMegabytes(t *testing.T) {
+	repo := newRepository(t)
+	content := strings.Repeat("x", 2*1024*1024-1) + "\n"
+	for index := 0; index < 5; index++ {
+		name := fmt.Sprintf("large-%d.txt", index)
+		writeFile(t, repo, name, content)
+		git(t, repo, "add", name)
+	}
+
+	_, err := AddedLines(context.Background(), repo)
+	var indexErr *Error
+	if !errors.As(err, &indexErr) {
+		t.Fatalf("AddedLines() error = %T %v, want *Error", err, err)
+	}
+	if indexErr.Kind != Unsupported {
+		t.Fatalf("error kind = %q, want %q", indexErr.Kind, Unsupported)
+	}
+}
+
+func TestAddedLinesRejectsUnmergedIndexEntries(t *testing.T) {
+	repo := newRepository(t)
+	baseOID := gitInput(t, repo, "base\n", "hash-object", "-w", "--stdin")
+	oursOID := gitInput(t, repo, "ours\n", "hash-object", "-w", "--stdin")
+	theirsOID := gitInput(t, repo, "theirs\n", "hash-object", "-w", "--stdin")
+	indexEntries := fmt.Sprintf(
+		"100644 %s 1\tconflict.txt\n100644 %s 2\tconflict.txt\n100644 %s 3\tconflict.txt\n",
+		baseOID,
+		oursOID,
+		theirsOID,
+	)
+	gitInput(t, repo, indexEntries, "update-index", "--index-info")
+
+	_, err := AddedLines(context.Background(), repo)
+	var indexErr *Error
+	if !errors.As(err, &indexErr) {
+		t.Fatalf("AddedLines() error = %T %v, want *Error", err, err)
+	}
+	if indexErr.Kind != Unsupported {
+		t.Fatalf("error kind = %q, want %q", indexErr.Kind, Unsupported)
 	}
 }
 
