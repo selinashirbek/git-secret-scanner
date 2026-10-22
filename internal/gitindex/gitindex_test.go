@@ -269,6 +269,38 @@ func TestAddedLinesRejectsUnmergedIndexEntries(t *testing.T) {
 	}
 }
 
+func TestParseNameStatusRejectsTooManyTargets(t *testing.T) {
+	var output strings.Builder
+	for index := 0; index <= maxStagedTargets; index++ {
+		fmt.Fprintf(&output, "A\x00file-%05d.txt\x00", index)
+	}
+
+	_, err := parseNameStatus([]byte(output.String()))
+	var indexErr *Error
+	if !errors.As(err, &indexErr) {
+		t.Fatalf("parseNameStatus() error = %T %v, want *Error", err, err)
+	}
+	if indexErr.Kind != Unsupported {
+		t.Fatalf("error kind = %q, want %q", indexErr.Kind, Unsupported)
+	}
+}
+
+func TestLimitedBufferStopsAtLimit(t *testing.T) {
+	buffer := &limitedBuffer{limit: 4}
+
+	written, err := buffer.Write([]byte("abcdef"))
+
+	if !errors.Is(err, errOutputLimit) {
+		t.Fatalf("Write() error = %v, want errOutputLimit", err)
+	}
+	if written != 4 {
+		t.Fatalf("Write() bytes = %d, want 4", written)
+	}
+	if !buffer.tooLarge || string(buffer.Bytes()) != "abcd" {
+		t.Fatalf("buffer = %q, tooLarge = %v", buffer.Bytes(), buffer.tooLarge)
+	}
+}
+
 func TestParsePatchRejectsMalformedHunk(t *testing.T) {
 	_, err := parsePatch("file.txt", []byte("@@ -0,0 +1,2 @@\n+only one\n"))
 	var indexErr *Error

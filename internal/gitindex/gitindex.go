@@ -16,8 +16,10 @@ import (
 const (
 	maxBlobSize          = 2 * 1024 * 1024
 	maxPatchSize         = 4 * 1024 * 1024
+	maxNameStatusSize    = 1 * 1024 * 1024
 	maxAggregateBlobSize = 8 * 1024 * 1024
 	maxAggregateLines    = 50_000
+	maxStagedTargets     = 10_000
 )
 
 // ErrorKind classifies failures that must stop a staged scan.
@@ -71,9 +73,17 @@ func AddedLines(ctx context.Context, startDir string) ([]Line, error) {
 		return nil, &Error{Kind: Unsupported, Err: errors.New("index contains unmerged entries")}
 	}
 
-	nameStatus, err := runGit(ctx, root, "diff", "--cached", "--name-status", "-z", "--diff-filter=ACMRT")
+	nameStatus, tooLarge, err := runGitLimited(
+		ctx,
+		root,
+		maxNameStatusSize,
+		"diff", "--cached", "--name-status", "-z", "--diff-filter=ACMRT",
+	)
 	if err != nil {
 		return nil, &Error{Kind: Git, Err: errors.New("could not enumerate staged paths")}
+	}
+	if tooLarge {
+		return nil, &Error{Kind: Unsupported, Err: errors.New("staged path list exceeds 1 MB")}
 	}
 	targets, err := parseNameStatus(nameStatus)
 	if err != nil {
@@ -162,6 +172,9 @@ func parseNameStatus(output []byte) ([]stagedTarget, error) {
 	}
 	var targets []stagedTarget
 	for index := 0; index < len(fields); {
+		if len(targets) >= maxStagedTargets {
+			return nil, &Error{Kind: Unsupported, Err: errors.New("staged path count exceeds 10000")}
+		}
 		status := string(fields[index])
 		index++
 		if status == "" {
@@ -307,6 +320,9 @@ func runGitLimited(ctx context.Context, dir string, limit int, args ...string) (
 	output := &limitedBuffer{limit: limit}
 	cmd.Stdout = output
 	err := cmd.Run()
+	if output.tooLarge {
+		return output.Bytes(), true, nil
+	}
 	return output.Bytes(), output.tooLarge, err
 }
 
@@ -326,14 +342,17 @@ type limitedBuffer struct {
 	tooLarge bool
 }
 
+var errOutputLimit = errors.New("Git output exceeds scan limit")
+
 func (buffer *limitedBuffer) Write(data []byte) (int, error) {
 	remaining := buffer.limit - buffer.buffer.Len()
 	if remaining < len(data) {
 		buffer.tooLarge = true
+		written := 0
 		if remaining > 0 {
-			_, _ = buffer.buffer.Write(data[:remaining])
+			written, _ = buffer.buffer.Write(data[:remaining])
 		}
-		return len(data), nil
+		return written, errOutputLimit
 	}
 	return buffer.buffer.Write(data)
 }
